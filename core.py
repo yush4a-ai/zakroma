@@ -1,4 +1,11 @@
 """Общая логика сохранения: используется ботом, импортом и программой."""
+import asyncio
+import io
+import re
+import secrets
+
+import httpx
+
 import ai
 import db
 import extract
@@ -31,8 +38,70 @@ async def process_item(uid: int, *, kind, url=None, title="", note="", text="", 
         embedding=await ai.embed(emb_text), ext_id=ext_id, created_at=created_at,
         image_url=image_url,
     )
+    if image:
+        asyncio.create_task(store_thumb(item_id, data=image))
+    elif image_url or (url and "youtu" in url):
+        asyncio.create_task(store_thumb(item_id, url=image_url or url))
     return {"id": item_id, "title": res["title"], "summary": res["summary"],
             "url": url, "tags": res["tags"], "status": "new"}
+
+
+# ---------- обложки ----------
+
+YT_ID = re.compile(r"(?:v=|shorts/|youtu\.be/|embed/)([\w-]{11})")
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
+
+
+def _shrink(data: bytes) -> bytes:
+    from PIL import Image
+    im = Image.open(io.BytesIO(data))
+    im = im.convert("RGB")
+    im.thumbnail((720, 720))
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=80, optimize=True)
+    return out.getvalue()
+
+
+async def store_thumb(item_id: int, url: str | None = None, data: bytes | None = None) -> bool:
+    """Скачивает обложку, уменьшает и сохраняет в базу. url — картинка или ссылка на страницу."""
+    try:
+        if data is None and url:
+            m = YT_ID.search(url) if "youtu" in url else None
+            img_url = f"https://i.ytimg.com/vi/{m.group(1)}/hqdefault.jpg" if m else url
+            async with httpx.AsyncClient(headers=UA, follow_redirects=True, timeout=20) as c:
+                r = await c.get(img_url)
+                if "image" not in r.headers.get("content-type", ""):
+                    page = await extract.fetch(url)
+                    if not page.get("image"):
+                        await db.thumb_failed(item_id)
+                        return False
+                    r = await c.get(page["image"])
+                data = r.content if r.status_code == 200 else None
+        if not data:
+            await db.thumb_failed(item_id)
+            return False
+        small = await asyncio.to_thread(_shrink, data)
+        await db.save_thumb(item_id, secrets.token_urlsafe(16), small)
+        return True
+    except Exception as e:
+        print("thumb error:", item_id, str(e)[:150])
+        await db.thumb_failed(item_id)
+        return False
+
+
+async def thumbs_loop():
+    """Докачивает обложки старым записям."""
+    while True:
+        try:
+            rows = await db.items_without_thumbs(10)
+            for r in rows:
+                await store_thumb(r["id"], url=r["image_url"] or r["url"])
+                await asyncio.sleep(2)
+            await asyncio.sleep(30 if rows else 600)
+        except Exception as e:
+            print("thumbs loop error:", e)
+            await asyncio.sleep(120)
 
 
 CLEAN_PROMPT = """Вот теги из личной базы полезных материалов (тег — сколько записей):

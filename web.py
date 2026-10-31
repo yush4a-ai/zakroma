@@ -26,6 +26,8 @@ WORD = re.compile(r"[\wё]+", re.I)
 
 
 def _thumb(r) -> str | None:
+    if r["thumb_key"]:
+        return f"/img/{r['thumb_key']}.jpg"
     if r["url"] and "youtu" in r["url"]:
         m = YT_ID.search(r["url"])
         if m:
@@ -262,6 +264,14 @@ async def tags_clean_apply(request: web.Request):
     return web.json_response({"updated": n})
 
 
+async def img(request: web.Request):
+    data = await db.get_thumb(request.match_info["key"])
+    if not data:
+        raise web.HTTPNotFound()
+    return web.Response(body=data, content_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 async def index(request: web.Request):
     return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -295,6 +305,7 @@ async def start(bot):
         web.post("/api/tags/clean", tags_clean_preview),
         web.post("/api/tags/clean/apply", tags_clean_apply),
         web.get("/api/stats", stats),
+        web.get("/img/{key}.jpg", img),
         web.get("/", index),
     ])
     if STATIC.exists():
@@ -305,4 +316,5 @@ async def start(bot):
     await web.TCPSite(runner, "0.0.0.0", port).start()
     asyncio.create_task(_trash_janitor())
     asyncio.create_task(core.backfill_loop())
+    asyncio.create_task(core.thumbs_loop())
     print(f"Веб-интерфейс на порту {port}")

@@ -60,7 +60,7 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.8; flex: none; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
 /* ---------- каркас ---------- */
-.shell { display: grid; grid-template-columns: var(--side-w) 1fr; height: 100vh; }
+.shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: 100vh; }
 .side {
   background: var(--side);
   border-right: 1px solid #151822;

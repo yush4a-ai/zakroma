@@ -39,6 +39,15 @@ ALTER TABLE items ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS favorite BOOLEAN DEFAULT false;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS thumb_key TEXT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS thumb_tries INT DEFAULT 0;
+
+-- обложки храним у себя: ссылки Instagram на картинки протухают через пару дней
+CREATE TABLE IF NOT EXISTS thumbs (
+    key         TEXT PRIMARY KEY,
+    item_id     INT REFERENCES items(id) ON DELETE CASCADE,
+    data        BYTEA NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS login_sessions (
     key         TEXT PRIMARY KEY,
@@ -106,7 +115,7 @@ async def add_item(user_id: int, **f) -> int:
 # ---------- для программы/сайта ----------
 
 ITEM_COLS = ("id, kind, url, title, note, summary, tags, status, favorite, source, image_url, "
-             "created_at")
+             "thumb_key, created_at")
 
 
 async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | None = None,
@@ -331,3 +340,24 @@ async def count(user_id: int) -> int:
     return await pool.fetchval(
         "SELECT count(*) FROM items WHERE user_id=$1 AND status <> 'trash'", user_id
     )
+
+
+async def save_thumb(item_id: int, key: str, data: bytes):
+    await pool.execute("INSERT INTO thumbs(key, item_id, data) VALUES($1,$2,$3) ON CONFLICT (key) DO NOTHING",
+                       key, item_id, data)
+    await pool.execute("UPDATE items SET thumb_key=$2 WHERE id=$1", item_id, key)
+
+
+async def thumb_failed(item_id: int):
+    await pool.execute("UPDATE items SET thumb_tries = coalesce(thumb_tries, 0) + 1 WHERE id=$1", item_id)
+
+
+async def get_thumb(key: str) -> bytes | None:
+    return await pool.fetchval("SELECT data FROM thumbs WHERE key=$1", key)
+
+
+async def items_without_thumbs(limit: int = 10):
+    return await pool.fetch(
+        "SELECT id, kind, url, image_url FROM items WHERE thumb_key IS NULL AND url IS NOT NULL "
+        "AND coalesce(thumb_tries, 0) < 2 AND status <> 'trash' AND kind NOT IN ('note','voice') "
+        "ORDER BY id DESC LIMIT $1", limit)

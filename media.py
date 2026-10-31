@@ -127,6 +127,43 @@ async def _youtube_page(url: str) -> dict:
     return out
 
 
+SUPADATA_KEY = os.environ.get("SUPADATA_API_KEY", "")
+
+
+async def _supadata(url: str) -> str:
+    """Готовые субтитры через Supadata (100 бесплатных запросов в месяц). Только существующие,
+    без платной генерации."""
+    if not SUPADATA_KEY:
+        return ""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=40) as c:
+            r = await c.get("https://api.supadata.ai/v1/transcript",
+                            params={"url": url, "text": "true", "mode": "native", "lang": "ru"},
+                            headers={"x-api-key": SUPADATA_KEY})
+            if r.status_code != 200:
+                print("supadata:", r.status_code, r.text[:200])
+                return ""
+            content = r.json().get("content", "")
+            if isinstance(content, list):
+                content = " ".join(ch.get("text", "") for ch in content)
+            return " ".join(str(content).split())[:8000]
+    except Exception as e:
+        print("supadata error:", e)
+        return ""
+
+
+async def _youtube(url: str) -> dict:
+    out = await _youtube_page(url)
+    if not out["has_speech"]:
+        subs = await _supadata(url)
+        if subs:
+            out["text"] = "\n".join(x for x in [out["text"], f"Речь в видео (субтитры): {subs}"] if x)
+            out["has_speech"] = True
+            print(f"supadata: субтитры получены, {len(subs)} симв.")
+    return out
+
+
 async def from_url(url: str) -> dict:
     """{'title', 'text'} по ссылке на видео. Никогда не падает."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -135,7 +172,7 @@ async def from_url(url: str) -> dict:
         except Exception as e:
             print("video download error:", url, str(e)[:200])
             if "youtube.com" in url or "youtu.be" in url:
-                return await _youtube_page(url)
+                return await _youtube(url)
             return {"title": "", "text": ""}
 
         transcript = ""

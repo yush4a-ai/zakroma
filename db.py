@@ -361,3 +361,12 @@ async def items_without_thumbs(limit: int = 10):
         "SELECT id, kind, url, image_url FROM items WHERE thumb_key IS NULL AND url IS NOT NULL "
         "AND coalesce(thumb_tries, 0) < 2 AND status <> 'trash' AND kind NOT IN ('note','voice') "
         "ORDER BY id DESC LIMIT $1", limit)
+
+
+async def empty_trash(user_id: int, item_id: int | None = None) -> int:
+    """Удаляет навсегда всё из корзины (или одну запись из корзины)."""
+    if item_id:
+        res = await pool.execute("DELETE FROM items WHERE user_id=$1 AND id=$2 AND status='trash'", user_id, item_id)
+    else:
+        res = await pool.execute("DELETE FROM items WHERE user_id=$1 AND status='trash'", user_id)
+    return int(res.split()[-1])

@@ -130,6 +130,9 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.8; flex: none; }
 .btn.sm svg { width: 14px; height: 14px; }
 .btn.icon { width: 34px; padding: 0; }
 .btn[disabled] { opacity: .5; pointer-events: none; }
+.btn.danger-btn { height: 34px; color: #ffb3b7; border-color: rgba(242, 98, 106, .35); background: rgba(242, 98, 106, .08); }
+.btn.danger-btn:hover { background: rgba(242, 98, 106, .16); }
+.btn.danger-btn.sure { background: var(--danger); color: #1b0507; border-color: transparent; font-weight: 600; }
 
 kbd {
   display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 9px;

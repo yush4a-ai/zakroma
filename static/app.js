@@ -297,8 +297,10 @@ function headHtml() {
   } else {
     title = VIEWS[r.view].title; sub = VIEWS[r.view].sub; count = s[r.view];
   }
+  const empty = r.view === "trash" && S.items.length
+    ? `<button class="btn danger-btn" id="emptyTrash">${ico("trash-2")} Очистить корзину</button>` : "";
   return `<div class="head"><div><h1>${title}${count != null ? ` <span class="count num">${count}</span>` : ""}</h1>${sub ? `<p>${sub}</p>` : ""}</div>
-    <span class="grow"></span>${filtersHtml()}</div>`;
+    <span class="grow"></span>${empty}${filtersHtml()}</div>`;
 }
 
 function filtersHtml() {
@@ -328,7 +330,9 @@ function actionsHtml(it, compact) {
     : (r === "all" || r === "tag" || r === "kind" || r === "new") && it.status !== "try"
       ? `<button class="btn sm accent" data-act="try">${ico("play")} Попробовать</button>`
       : `<button class="btn sm accent" data-act="open">${ico("play")} Открыть</button>`;
-  const used = `<button class="btn sm ${it.status === "used" ? "on" : ""}" data-act="used">${ico("check")} Использовал</button>`;
+  const used = it.status === "trash"
+    ? `<button class="btn sm" data-act="purge">${ico("x")} Удалить навсегда</button>`
+    : `<button class="btn sm ${it.status === "used" ? "on" : ""}" data-act="used">${ico("check")} Использовал</button>`;
   const trash = it.status === "trash" ? "" : `<button class="btn sm trash" data-act="trash" title="В мусор">${ico("trash-2")}<span class="lbl">В мусор</span></button>`;
   return compact ? primary + used + trash : `<div class="acts">${primary}${used}${trash}</div>`;
 }
@@ -413,6 +417,15 @@ function renderFeed(skeleton = false) {
     else { t.classList.add("empty"); img.remove(); }
   }, { once: true }));
   const m = document.getElementById("more"); if (m) m.onclick = () => loadList(true);
+  const et = document.getElementById("emptyTrash");
+  if (et) et.onclick = () => {
+    const n = S.stats?.trash || S.items.length;
+    if (et.dataset.sure) return emptyTrash();
+    et.dataset.sure = "1";
+    et.innerHTML = `${ico("triangle-alert")} Удалить ${n} ${plural(n, "запись", "записи", "записей")} навсегда?`;
+    et.classList.add("sure"); icons();
+    setTimeout(() => { if (document.body.contains(et) && et.dataset.sure) { delete et.dataset.sure; et.classList.remove("sure"); et.innerHTML = `${ico("trash-2")} Очистить корзину`; icons(); } }, 4000);
+  };
   const sort = document.getElementById("sort"); if (sort) sort.onchange = () => { S.sort = sort.value; loadList(); };
   el.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => {
     S.kind = b.dataset.kind;
@@ -447,6 +460,13 @@ async function patch(it, body, msg, undo) {
     refreshMeta();
   } catch (e) { toast(e.message); Object.assign(it, before); loadList(); }
 }
+async function emptyTrash(id) {
+  try {
+    const r = await api("/api/trash/empty", { method: "POST", body: id ? { id } : {} });
+    toast(id ? "Удалено навсегда" : `Корзина очищена: ${r.deleted} ${plural(r.deleted, "запись", "записи", "записей")}`);
+    loadList(); refreshMeta();
+  } catch (e) { toast(e.message); }
+}
 async function restore(before, body) {
   const back = {}; Object.keys(body).forEach(k => back[k] = before[k]);
   await api("/api/items/" + before.id, { method: "PATCH", body: back });
@@ -460,6 +480,7 @@ function act(name, it, anchor) {
   else if (name === "restore") patch(it, { status: "keep" }, "Возвращено из корзины");
   else if (name === "fav") patch(it, { favorite: !it.favorite }, it.favorite ? "Убрано из избранного" : "Добавлено в избранное");
   else if (name === "open") openUrl(it.url) || (!it.url && openItem(it.id));
+  else if (name === "purge") emptyTrash(it.id);
   else if (name === "menu") showMenu(it, anchor);
 }
 
@@ -471,7 +492,7 @@ function showMenu(it, anchor) {
     <button data-m="detail">${ico("panel-right-open")} Подробнее</button>
     ${it.url ? `<button data-m="open">${ico("external-link")} Открыть оригинал</button><button data-m="copy">${ico("copy")} Скопировать ссылку</button>` : ""}
     <button data-m="fav">${ico("star")} ${it.favorite ? "Убрать из избранного" : "В избранное"}</button>
-    ${it.status === "trash" ? `<button data-m="restore">${ico("undo-2")} Вернуть</button>` : `<button data-m="trash" class="danger">${ico("trash-2")} В мусор</button>`}`;
+    ${it.status === "trash" ? `<button data-m="restore">${ico("undo-2")} Вернуть</button><button data-m="purge" class="danger">${ico("trash-2")} Удалить навсегда</button>` : `<button data-m="trash" class="danger">${ico("trash-2")} В мусор</button>`}`;
   document.body.appendChild(m);
   icons();
   const r = anchor.getBoundingClientRect();
@@ -484,6 +505,7 @@ function showMenu(it, anchor) {
     if (k === "detail") openItem(it.id);
     else if (k === "open") openUrl(it.url);
     else if (k === "copy") copy(it.url);
+    else if (k === "purge") emptyTrash(it.id);
     else act(k, it);
   };
   setTimeout(() => document.addEventListener("click", closeMenu, { once: true }), 0);

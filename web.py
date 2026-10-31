@@ -241,6 +241,12 @@ async def add(request: web.Request):
     return web.json_response({"saved": saved, "duplicates": dups})
 
 
+async def trash_empty(request: web.Request):
+    body = await request.json() if request.can_read_body else {}
+    n = await db.empty_trash(request["uid"], body.get("id"))
+    return web.json_response({"deleted": n})
+
+
 # ---------- уборка тегов ----------
 
 pending_tagmaps: dict[int, dict] = {}
@@ -305,6 +311,7 @@ async def start(bot):
         web.post("/api/tags/clean", tags_clean_preview),
         web.post("/api/tags/clean/apply", tags_clean_apply),
         web.get("/api/stats", stats),
+        web.post("/api/trash/empty", trash_empty),
         web.get("/img/{key}.jpg", img),
         web.get("/", index),
     ])

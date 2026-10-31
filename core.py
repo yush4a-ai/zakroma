@@ -59,3 +59,31 @@ async def suggest_tag_cleanup(uid: int) -> dict[str, str]:
         if old in current and new and new[0] != old:
             mapping[old] = new[0]
     return mapping
+
+
+async def backfill_loop():
+    """Тихо дорабатывает записи, которым не досталась выжимка (например, ИИ упёрся в лимит)."""
+    import asyncio
+    import importer
+    while True:
+        await asyncio.sleep(120)
+        if importer.running:
+            continue
+        try:
+            rows = await db.pool.fetch(
+                "SELECT id, user_id, kind, url, title, note, raw_text FROM items "
+                "WHERE coalesce(summary, '') = '' AND status <> 'trash' AND kind NOT IN ('note','voice') "
+                "ORDER BY id DESC LIMIT 5")
+            for r in rows:
+                existing = [t for t, _ in await db.user_tags(r["user_id"])]
+                res = await ai.analyze(r["kind"], r["url"], r["title"], r["note"], r["raw_text"] or "", existing)
+                if not res["summary"]:
+                    continue
+                emb_text = " ".join(x for x in [res["title"], res["summary"], " ".join(res["tags"]),
+                                                r["note"] or "", (r["raw_text"] or "")[:1500]] if x)
+                await db.pool.execute(
+                    "UPDATE items SET title=$2, summary=$3, tags=$4, embedding=$5 WHERE id=$1",
+                    r["id"], res["title"], res["summary"], res["tags"], await ai.embed(emb_text))
+                await asyncio.sleep(10)
+        except Exception as e:
+            print("backfill error:", e)

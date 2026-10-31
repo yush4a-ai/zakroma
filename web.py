@@ -304,4 +304,5 @@ async def start(bot):
     port = int(os.environ.get("WEB_PORT", 8080))  # домен Railway смотрит на порт 8080
     await web.TCPSite(runner, "0.0.0.0", port).start()
     asyncio.create_task(_trash_janitor())
+    asyncio.create_task(core.backfill_loop())
     print(f"Веб-интерфейс на порту {port}")

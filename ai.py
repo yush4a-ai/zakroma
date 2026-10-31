@@ -71,24 +71,33 @@ async def _ask_text(prompt: str) -> dict:
         models.remove(_working_model)
         models.insert(0, _working_model)
 
-    for model in models:
-        kwargs = {}
-        if model.startswith("openai/gpt-oss"):
-            kwargs["extra_body"] = {"reasoning_effort": "low"}
-        try:
-            resp = await llm.chat.completions.create(
-                model=model, max_tokens=1500,
-                response_format={"type": "json_object"},
-                messages=[{"role": "user", "content": prompt}],
-                **kwargs,
-            )
-            data = _parse_json(resp.choices[0].message.content or "")
-            if data:
-                _working_model = model
-                return data
-            print(f"analyze: пустой ответ от {model}")
-        except Exception as e:
-            print(f"analyze error ({model}):", e)
+    # до 3 кругов: если все модели упёрлись в лимит бесплатного Groq — ждём и пробуем снова
+    for round_ in range(3):
+        limited = 0
+        for model in models:
+            kwargs = {}
+            if model.startswith("openai/gpt-oss"):
+                kwargs["extra_body"] = {"reasoning_effort": "low"}
+            try:
+                resp = await llm.chat.completions.create(
+                    model=model, max_tokens=1500,
+                    response_format={"type": "json_object"},
+                    messages=[{"role": "user", "content": prompt}],
+                    **kwargs,
+                )
+                data = _parse_json(resp.choices[0].message.content or "")
+                if data:
+                    _working_model = model
+                    return data
+                print(f"analyze: пустой ответ от {model}")
+            except Exception as e:
+                if getattr(e, "status_code", None) == 429:
+                    limited += 1
+                    continue
+                print(f"analyze error ({model}):", str(e)[:200])
+        if not limited:
+            break
+        await asyncio.sleep(15 * (round_ + 1))
     return {}
 
 

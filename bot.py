@@ -18,6 +18,8 @@ import db
 import extract
 import importer
 import media
+import secrets
+import web
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
@@ -143,7 +145,8 @@ async def search(m: Message):
 
 # ---------- сохранение ----------
 
-async def save(m: Message, *, kind, url=None, title="", note="", text="", image=None):
+async def save(m: Message, *, kind, url=None, title="", note="", text="", image=None,
+               image_url=None):
     uid = m.from_user.id
     await db.ensure_user(uid, m.from_user.username)
 
@@ -160,7 +163,7 @@ async def save(m: Message, *, kind, url=None, title="", note="", text="", image=
         source = getattr(chat, "title", None) or getattr(chat, "full_name", None) or "переслано"
 
     row = await core.process_item(uid, kind=kind, url=url, title=title, note=note, text=text,
-                                  image=image, source=source)
+                                  image=image, source=source, image_url=image_url)
     await m.answer("📥 Сохранил\n\n" + card(row), disable_web_page_preview=True)
 
 
@@ -170,11 +173,8 @@ pending_threads: dict[int, list[dict]] = {}
 pending_tagmap: dict[int, dict] = {}
 
 
-def start_import(bot: Bot, chat_id: int, uid: int, entries: list[dict]) -> bool:
-    if uid in importer.running:
-        return False
-    importer.running[uid] = asyncio.create_task(importer.run(bot, chat_id, uid, entries))
-    return True
+async def start_import(bot: Bot, chat_id: int, uid: int, entries: list[dict]) -> bool:
+    return await importer.start(bot, chat_id, uid, entries)
 
 
 @router.message(lambda m: bool(m.document) and
@@ -213,7 +213,7 @@ async def import_file(m: Message, bot: Bot):
 
     if not entries:
         return await m.answer("В файле не нашёл ни ссылок, ни заметок.")
-    if not start_import(bot, m.chat.id, m.from_user.id, entries):
+    if not await start_import(bot, m.chat.id, m.from_user.id, entries):
         await m.answer("Импорт уже идёт. Дождись или останови: /stop_import")
 
 
@@ -224,7 +224,7 @@ async def import_choose(c: CallbackQuery, bot: Bot):
         return await c.answer("Устарело, пришли файл ещё раз")
     t = threads[int(c.data.split(":")[1])]
     await c.message.edit_text(f"Импортирую переписку «{esc(t['name'])}»")
-    if not start_import(bot, c.message.chat.id, c.from_user.id, t["entries"]):
+    if not await start_import(bot, c.message.chat.id, c.from_user.id, t["entries"]):
         await c.message.answer("Импорт уже идёт. Дождись или останови: /stop_import")
     await c.answer()
 
@@ -236,7 +236,19 @@ async def stop_import(m: Message):
     task = importer.running.get(m.from_user.id)
     if not task:
         return await m.answer("Сейчас ничего не импортируется.")
+    importer.stopping[m.from_user.id] = True
     task.cancel()
+
+
+@router.message(Command("login"))
+async def login(m: Message):
+    if not allowed(m):
+        return
+    await db.ensure_user(m.from_user.id, m.from_user.username)
+    code = f"{secrets.randbelow(10**6):06d}"
+    await db.save_login_code(m.from_user.id, code)
+    await m.answer(f"Код для входа в программу или на сайт:\n\n<code>{code}</code>\n\n"
+                   f"Действует 10 минут, сработает один раз.")
 
 
 # ---------- уборка тегов ----------
@@ -382,8 +394,8 @@ async def text_msg(m: Message, bot: Bot):
         status = None
         if media.is_video_url(u):
             status = await m.answer("🎬 Смотрю видео… это может занять до минуты")
-        kind, title, text = await core.enrich_url(u)
-        await save(m, kind=kind, url=u, title=title, note=note, text=text)
+        kind, title, text, image_url = await core.enrich_url(u)
+        await save(m, kind=kind, url=u, title=title, note=note, text=text, image_url=image_url)
         if status:
             try:
                 await status.delete()
@@ -398,6 +410,8 @@ async def main():
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
+    await web.start(bot)
+    await importer.resume_all(bot)
     logging.info("Закрома запущены")
     await dp.start_polling(bot)
 

@@ -124,16 +124,52 @@ def detect(blob: bytes, filename: str):
 # ---------- сам импорт ----------
 
 running: dict[int, asyncio.Task] = {}
+stopping: dict[int, bool] = {}   # остановлено пользователем, а не перезапуском сервера
 
 
-async def run(bot, chat_id: int, uid: int, entries: list[dict]):
+def _dump(entries: list[dict]) -> str:
+    return json.dumps([{**e, "created_at": e["created_at"].isoformat() if e["created_at"] else None}
+                       for e in entries], ensure_ascii=False)
+
+
+def _load(s: str) -> list[dict]:
+    out = json.loads(s)
+    for e in out:
+        e["created_at"] = datetime.fromisoformat(e["created_at"]) if e.get("created_at") else None
+    return out
+
+
+async def start(bot, chat_id: int, uid: int, entries: list[dict]) -> bool:
+    """Запускает импорт и запоминает его в базе, чтобы пережить перезапуск сервера."""
+    if uid in running:
+        return False
+    await db.import_save(uid, chat_id, _dump(entries))
+    running[uid] = asyncio.create_task(run(bot, chat_id, uid, entries))
+    return True
+
+
+async def resume_all(bot):
+    """После перезапуска сервера продолжаем незаконченные импорты."""
+    for r in await db.imports_pending():
+        entries = _load(r["entries"])
+        if r["done"] >= len(entries):
+            await db.import_finish(r["user_id"])
+            continue
+        running[r["user_id"]] = asyncio.create_task(
+            run(bot, r["chat_id"], r["user_id"], entries, start_at=r["done"]))
+
+
+async def run(bot, chat_id: int, uid: int, entries: list[dict], start_at: int = 0):
     total = len(entries)
-    status = await bot.send_message(chat_id, f"📦 Импорт: найдено {total} записей. Начинаю…\n"
+    head = "продолжаю после перезапуска" if start_at else "начинаю"
+    status = await bot.send_message(chat_id, f"📦 Импорт: найдено {total} записей, {head}…\n"
                                              f"Остановить: /stop_import")
-    done = added = skipped = errors = 0
+    done, added, skipped, errors = start_at, 0, 0, 0
     try:
-        for e in entries:
+        for e in entries[start_at:]:
             done += 1
+            if done % 5 == 0:
+                await db.import_progress(uid, done)
             try:
                 if await db.ext_exists(uid, e["ext_id"]):
                     skipped += 1
@@ -143,13 +179,13 @@ async def run(bot, chat_id: int, uid: int, entries: list[dict]):
                     if dup:
                         skipped += 1
                         continue
-                    kind, title, text = await core.enrich_url(e["url"])
+                    kind, title, text, image_url = await core.enrich_url(e["url"])
                     text = "\n".join(x for x in [e["text"], text] if x)
                 else:
-                    kind, title, text = "note", "", e["note"]
+                    kind, title, text, image_url = "note", "", e["note"], None
                 await core.process_item(uid, kind=kind, url=e["url"], title=title, note=e["note"],
                                         text=text, source=e["source"], ext_id=e["ext_id"],
-                                        created_at=e["created_at"])
+                                        created_at=e["created_at"], image_url=image_url)
                 added += 1
             except Exception as ex:
                 errors += 1
@@ -165,13 +201,18 @@ async def run(bot, chat_id: int, uid: int, entries: list[dict]):
             # бережём бесплатные лимиты ИИ и не злим Instagram
             await asyncio.sleep(3 if e["url"] and extract.detect_kind(e["url"]) == "reel" else 1.5)
     except asyncio.CancelledError:
-        await bot.send_message(chat_id, f"⏹ Импорт остановлен на {done}/{total}. "
-                                        f"Добавлено {added}. Можно отправить файл ещё раз — "
-                                        f"продолжу с того же места.")
+        if stopping.pop(uid, False):
+            await db.import_finish(uid)
+            await bot.send_message(chat_id, f"⏹ Импорт остановлен на {done}/{total}. "
+                                            f"Добавлено {added}. Можно отправить файл ещё раз — "
+                                            f"уже добавленное пропущу.")
+        else:
+            await db.import_progress(uid, max(done - 1, start_at))  # сервер перезапускается
         raise
     finally:
         running.pop(uid, None)
 
+    await db.import_finish(uid)
     await bot.send_message(
         chat_id,
         f"✅ Импорт готов!\nДобавлено: {added}\nУже было: {skipped}\nОшибок: {errors}\n\n"

@@ -54,6 +54,7 @@ def _download(url: str, tmp: str) -> dict:
             "description": (info.get("description") or "")[:3000],
             "author": info.get("uploader") or info.get("channel") or "",
             "duration": info.get("duration") or 0,
+            "thumbnail": info.get("thumbnail"),
             "path": None,
         }
         if out["duration"] and out["duration"] > MAX_SECONDS:
@@ -189,7 +190,8 @@ async def from_url(url: str) -> dict:
         parts.append(f"Описание: {meta['description']}")
     if transcript:
         parts.append(f"Речь в видео: {transcript}")
-    return {"title": meta["title"], "text": "\n".join(parts), "has_speech": bool(transcript)}
+    return {"title": meta["title"], "text": "\n".join(parts), "has_speech": bool(transcript),
+            "image": meta.get("thumbnail")}
 
 
 async def from_bytes(data: bytes, name: str = "video.mp4") -> str:

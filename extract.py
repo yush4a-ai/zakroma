@@ -36,7 +36,7 @@ def _meta(soup: BeautifulSoup, *names: str) -> str:
 async def fetch(url: str) -> dict:
     """Возвращает {'title': ..., 'text': ...}. Никогда не падает — в худшем случае пусто."""
     kind = detect_kind(url)
-    out = {"title": "", "text": ""}
+    out = {"title": "", "text": "", "image": None}
     try:
         async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=15) as c:
             if kind == "youtube":
@@ -52,6 +52,7 @@ async def fetch(url: str) -> dict:
             out["title"] = out["title"] or _meta(soup, "og:title", "twitter:title") or (
                 soup.title.string.strip() if soup.title and soup.title.string else "")
             desc = _meta(soup, "og:description", "description", "twitter:description")
+            out["image"] = _meta(soup, "og:image", "twitter:image") or None
 
             body = ""
             if kind == "link":

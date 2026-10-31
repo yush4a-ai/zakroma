@@ -37,7 +37,8 @@ def _download(url: str, tmp: str) -> dict:
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "socket_timeout": 20, "ffmpeg_location": FFMPEG,
         "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-        "format": "bestaudio/best",
+        # сначала чистый звук, иначе любой файл, где звук точно есть
+        "format": "bestaudio/best[acodec!=none]/bestvideo*+bestaudio/best",
         "max_filesize": 150 * 1024 * 1024,
     }
     if COOKIES:

@@ -2,7 +2,7 @@ name: Сборка программы для Windows
 
 on:
   push:
-    branches: [main, desktop]
+    branches: [main]
     paths: ["desktop/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
 

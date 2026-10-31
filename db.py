@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS items (
 
 CREATE INDEX IF NOT EXISTS items_user_idx ON items(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS items_url_idx  ON items(user_id, url);
+
+-- для импорта: id исходного сообщения, чтобы не импортировать одно и то же дважды
+ALTER TABLE items ADD COLUMN IF NOT EXISTS ext_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS items_ext_idx ON items(user_id, ext_id) WHERE ext_id IS NOT NULL;
 """
 
 
@@ -56,11 +60,37 @@ async def find_by_url(user_id: int, url: str):
 
 async def add_item(user_id: int, **f) -> int:
     return await pool.fetchval(
-        """INSERT INTO items(user_id, kind, url, title, raw_text, note, summary, tags, source, embedding)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id""",
+        """INSERT INTO items(user_id, kind, url, title, raw_text, note, summary, tags, source,
+                             embedding, ext_id, created_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, coalesce($12, now())) RETURNING id""",
         user_id, f["kind"], f.get("url"), f.get("title"), f.get("raw_text"), f.get("note"),
         f.get("summary"), f.get("tags", []), f.get("source"), f.get("embedding"),
+        f.get("ext_id"), f.get("created_at"),
     )
+
+
+async def ext_exists(user_id: int, ext_id: str) -> bool:
+    return await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM items WHERE user_id=$1 AND ext_id=$2)", user_id, ext_id
+    )
+
+
+async def remap_tags(user_id: int, mapping: dict[str, str]) -> int:
+    """Переименовать/объединить теги по словарю {старый: новый}. Возвращает число изменённых записей."""
+    rows = await pool.fetch("SELECT id, tags FROM items WHERE user_id=$1", user_id)
+    updates = []
+    for r in rows:
+        old = list(r["tags"] or [])
+        new = []
+        for t in old:
+            t2 = mapping.get(t, t)
+            if t2 and t2 not in new:
+                new.append(t2)
+        if new != old:
+            updates.append((new, r["id"]))
+    if updates:
+        await pool.executemany("UPDATE items SET tags=$1 WHERE id=$2", updates)
+    return len(updates)
 
 
 async def user_tags(user_id: int) -> list[tuple[str, int]]:
@@ -89,7 +119,7 @@ async def get_items(user_id: int, ids: list[int]):
 async def last_items(user_id: int, limit: int = 10):
     return await pool.fetch(
         "SELECT * FROM items WHERE user_id=$1 AND status <> 'trash' "
-        "ORDER BY created_at DESC LIMIT $2",
+        "ORDER BY id DESC LIMIT $2",
         user_id, limit,
     )
 

@@ -8,12 +8,15 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import ai
 import config
+import core
 import db
 import extract
+import importer
 import media
 
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +30,10 @@ HELP = (
     "/last — последние 10\n"
     "/tags — все теги\n"
     "/tag монтаж — всё по тегу\n"
-    "/del 12 — убрать запись №12 в мусор"
+    "/del 12 — убрать запись №12 в мусор\n"
+    "/cleantags — навести порядок в тегах\n\n"
+    "📦 <b>Импорт:</b> пришли result.json (экспорт Избранного из Telegram) "
+    "или архив/message_1.json из Instagram"
 )
 
 STATUS_ICON = {"new": "", "try": "🧪 ", "used": "✅ "}
@@ -147,25 +153,153 @@ async def save(m: Message, *, kind, url=None, title="", note="", text="", image=
             return await m.answer("Это уже есть в закромах 👇\n\n" + card(dup),
                                   disable_web_page_preview=True)
 
-    existing = [t for t, _ in await db.user_tags(uid)]
-    res = await ai.analyze(kind, url, title, note, text, existing, image=image)
-
     source = None
     origin = m.forward_origin
     if origin is not None:
         chat = getattr(origin, "chat", None) or getattr(origin, "sender_user", None)
         source = getattr(chat, "title", None) or getattr(chat, "full_name", None) or "переслано"
 
-    emb_text = " ".join(x for x in [res["title"], res["summary"], " ".join(res["tags"]),
-                                    note, text[:1500]] if x)
-    item_id = await db.add_item(
-        uid, kind=kind, url=url, title=res["title"], raw_text=text, note=note,
-        summary=res["summary"], tags=res["tags"], source=source,
-        embedding=await ai.embed(emb_text),
-    )
-    row = {"id": item_id, "title": res["title"], "summary": res["summary"],
-           "url": url, "tags": res["tags"], "status": "new"}
+    row = await core.process_item(uid, kind=kind, url=url, title=title, note=note, text=text,
+                                  image=image, source=source)
     await m.answer("📥 Сохранил\n\n" + card(row), disable_web_page_preview=True)
+
+
+# ---------- импорт старых завалов ----------
+
+pending_threads: dict[int, list[dict]] = {}
+pending_tagmap: dict[int, dict] = {}
+
+
+def start_import(bot: Bot, chat_id: int, uid: int, entries: list[dict]) -> bool:
+    if uid in importer.running:
+        return False
+    importer.running[uid] = asyncio.create_task(importer.run(bot, chat_id, uid, entries))
+    return True
+
+
+@router.message(lambda m: bool(m.document) and
+                (m.document.file_name or "").lower().endswith((".json", ".zip")))
+async def import_file(m: Message, bot: Bot):
+    if not allowed(m):
+        return
+    doc = m.document
+    if (doc.file_size or 0) > 20 * 1024 * 1024:
+        return await m.answer(
+            "Файл больше 20 МБ — Telegram не даёт ботам скачивать такие. "
+            "Распакуй архив и пришли только message_1.json из папки нужной переписки.")
+    await db.ensure_user(m.from_user.id, m.from_user.username)
+    buf = io.BytesIO()
+    await bot.download(doc, destination=buf)
+    try:
+        kind, data = importer.detect(buf.getvalue(), doc.file_name)
+    except Exception as e:
+        return await m.answer(f"Не смог прочитать файл 😕 ({esc(e)})")
+
+    if kind == "instagram_zip":
+        if not data:
+            return await m.answer("В архиве не нашёл переписок со ссылками.")
+        if len(data) == 1:
+            entries = data[0]["entries"]
+        else:
+            pending_threads[m.from_user.id] = data[:6]
+            kb = InlineKeyboardBuilder()
+            for i, t in enumerate(data[:6]):
+                n = sum(1 for e in t["entries"] if e["url"])
+                kb.button(text=f"{t['name'][:30]} — {n} ссылок", callback_data=f"imp:{i}")
+            kb.adjust(1)
+            return await m.answer("Из какой переписки импортировать?", reply_markup=kb.as_markup())
+    else:
+        entries = data
+
+    if not entries:
+        return await m.answer("В файле не нашёл ни ссылок, ни заметок.")
+    if not start_import(bot, m.chat.id, m.from_user.id, entries):
+        await m.answer("Импорт уже идёт. Дождись или останови: /stop_import")
+
+
+@router.callback_query(F.data.startswith("imp:"))
+async def import_choose(c: CallbackQuery, bot: Bot):
+    threads = pending_threads.pop(c.from_user.id, None)
+    if not threads:
+        return await c.answer("Устарело, пришли файл ещё раз")
+    t = threads[int(c.data.split(":")[1])]
+    await c.message.edit_text(f"Импортирую переписку «{esc(t['name'])}»")
+    if not start_import(bot, c.message.chat.id, c.from_user.id, t["entries"]):
+        await c.message.answer("Импорт уже идёт. Дождись или останови: /stop_import")
+    await c.answer()
+
+
+@router.message(Command("stop_import"))
+async def stop_import(m: Message):
+    if not allowed(m):
+        return
+    task = importer.running.get(m.from_user.id)
+    if not task:
+        return await m.answer("Сейчас ничего не импортируется.")
+    task.cancel()
+
+
+# ---------- уборка тегов ----------
+
+CLEAN_PROMPT = """Вот теги из личной базы полезных материалов (тег — сколько записей):
+{tags}
+
+Наведи порядок: объедини синонимы и слишком мелкие теги в понятные группы,
+чтобы в итоге осталось примерно 15–25 тегов. Теги — строчные, по-русски, слова через _.
+Названия программ и брендов (unity, blender, chatgpt) можно оставить латиницей.
+
+Ответь ТОЛЬКО JSON: {{"map": {{"старый_тег": "новый_тег", ...}}}}
+Включай в map только те теги, которые меняются."""
+
+
+@router.message(Command("cleantags"))
+async def cleantags(m: Message):
+    if not allowed(m):
+        return
+    t = await db.user_tags(m.from_user.id)
+    if len(t) < 5:
+        return await m.answer("Тегов пока мало, убирать нечего.")
+    await bot_typing(m)
+    data = await ai._ask_text(CLEAN_PROMPT.format(tags="\n".join(f"{n} — {c}" for n, c in t)))
+    current = {n for n, _ in t}
+    mapping = {}
+    for old, new in (data.get("map") or {}).items():
+        new = ai._clean_tags([new])
+        if old in current and new and new[0] != old:
+            mapping[old] = new[0]
+    if not mapping:
+        return await m.answer("Теги и так в порядке 👌")
+
+    groups: dict[str, list[str]] = {}
+    for old, new in mapping.items():
+        groups.setdefault(new, []).append(old)
+    lines = [f"#{new} ← " + ", ".join(f"#{o}" for o in olds) for new, olds in groups.items()]
+    final = sorted({mapping.get(n, n) for n in current})
+    pending_tagmap[m.from_user.id] = mapping
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Применить", callback_data="tags:yes")
+    kb.button(text="Отмена", callback_data="tags:no")
+    await m.answer("Предлагаю объединить:\n" + "\n".join(lines[:40]) +
+                   f"\n\nВ итоге останется {len(final)} тегов.", reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("tags:"))
+async def cleantags_apply(c: CallbackQuery):
+    mapping = pending_tagmap.pop(c.from_user.id, None)
+    if c.data == "tags:no" or not mapping:
+        await c.message.edit_text("Оставил теги как есть.")
+        return await c.answer()
+    n = await db.remap_tags(c.from_user.id, mapping)
+    await c.message.edit_text(f"✅ Готово, обновил {n} записей. Список тегов: /tags")
+    await c.answer()
+
+
+async def bot_typing(m: Message):
+    try:
+        await m.bot.send_chat_action(m.chat.id, "typing")
+    except Exception:
+        pass
 
 
 @router.message(F.voice | F.audio)
@@ -245,20 +379,16 @@ async def text_msg(m: Message, bot: Bot):
                            disable_web_page_preview=True)
             continue
 
-        data = await extract.fetch(u)
+        status = None
         if media.is_video_url(u):
             status = await m.answer("🎬 Смотрю видео… это может занять до минуты")
-            v = await media.from_url(u)
-            title = v["title"] or data["title"]
-            text = "\n".join(x for x in [v["text"], data["text"]] if x)
-            await save(m, kind=extract.detect_kind(u), url=u, title=title, note=note, text=text)
+        kind, title, text = await core.enrich_url(u)
+        await save(m, kind=kind, url=u, title=title, note=note, text=text)
+        if status:
             try:
                 await status.delete()
             except Exception:
                 pass
-        else:
-            await save(m, kind=extract.detect_kind(u), url=u, title=data["title"],
-                       note=note, text=data["text"])
 
 
 async def main():

@@ -76,7 +76,8 @@ async def store_thumb(item_id: int, url: str | None = None, data: bytes | None =
                     if not page.get("image"):
                         await db.thumb_failed(item_id)
                         return False
-                    r = await c.get(page["image"])
+                    from urllib.parse import urljoin
+                    r = await c.get(urljoin(str(r.url), page["image"]))
                 data = r.content if r.status_code == 200 else None
         if not data:
             await db.thumb_failed(item_id)

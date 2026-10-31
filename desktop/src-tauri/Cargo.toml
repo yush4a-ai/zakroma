@@ -1,6 +1,6 @@
 [package]
 name = "zakroma"
-version = "0.2.0"
+version = "0.3.0"
 description = "Закрома — всё полезное в одном месте"
 edition = "2021"
 

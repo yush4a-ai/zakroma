@@ -230,7 +230,8 @@ function renderSide() {
     ${kinds ? `<div class="nav-sep"></div><nav class="nav">${kinds}</nav>` : ""}
     <div class="nav-sep"></div>
     <nav class="nav">${link("trash", "trash-2", "Корзина", s.trash ?? "")}</nav>
-    <div class="side-foot nav">${link("settings", "settings", "Настройки")}</div>`;
+    <div class="side-foot nav">${UPD.ready ? `<button class="upd" id="updBtn" title="Версия ${esc(UPD.version)}">${ico("lightbulb")}<span>Есть обновление</span><i></i></button>` : ""}${link("settings", "settings", "Настройки")}</div>`;
+  const ub = document.getElementById("updBtn"); if (ub) ub.onclick = installUpdate;
   const n = document.getElementById("newN"); if (n) n.textContent = s.new ?? 0;
   icons();
 }
@@ -880,6 +881,31 @@ function tauriHooks() {
   });
 }
 
+/* ---------- обновление программы для Windows ---------- */
+const UPD = { ready: false, version: "", url: "" };
+const verNum = v => v.split(".").map(n => parseInt(n, 10) || 0);
+const newer = (a, b) => { const x = verNum(a), y = verNum(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+async function checkUpdate() {
+  if (!TAURI?.app || IS_QUICK) return;
+  try {
+    const mine = await TAURI.app.getVersion();
+    const rels = await (await fetch("https://api.github.com/repos/yush4a-ai/zakroma/releases?per_page=10")).json();
+    let best = null;
+    for (const r of rels) for (const a of r.assets || []) {
+      const m = a.name.match(/^Zakroma_(\d+\.\d+\.\d+)_x64-setup\.exe$/);
+      if (m && (!best || newer(m[1], best.version))) best = { version: m[1], url: a.browser_download_url };
+    }
+    if (best && newer(best.version, mine)) { Object.assign(UPD, best, { ready: true }); renderSide(); }
+  } catch {}
+}
+async function installUpdate() {
+  if (!UPD.ready) return;
+  toast(`Скачиваю версию ${UPD.version}… Программа сама перезапустится через минуту.`);
+  const b = document.getElementById("updBtn"); if (b) { b.disabled = true; b.querySelector("span").textContent = "Обновляю…"; }
+  try { await TAURI.core.invoke("install_update", { url: UPD.url }); }
+  catch (e) { toast("Не получилось обновиться: " + (e?.message || e)); if (b) b.disabled = false; }
+}
+
 /* ---------- запуск ---------- */
 async function route() {
   closeMenu();
@@ -914,6 +940,7 @@ async function boot() {
   window.onhashchange = route;
   route();
   setInterval(refreshMeta, 60000);
+  checkUpdate(); setInterval(checkUpdate, 3 * 3600 * 1000);
 }
 
 boot();

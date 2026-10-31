@@ -85,6 +85,14 @@ svg.lucide { width: 18px; height: 18px; stroke-width: 1.8; flex: none; }
 .nav a svg { color: var(--text-2); width: 20px; height: 20px; stroke-width: 1.9; }
 .nav a.on svg { color: var(--accent-hi); }
 .side-foot { margin-top: auto; padding-top: 12px; }
+.upd { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px; margin-bottom: 6px; border-radius: var(--r-ctl);
+  background: var(--accent-soft); border: 1px solid #4c4795; color: #e3e0ff; font-weight: 600; text-align: left; }
+.upd svg { width: 20px; height: 20px; color: var(--star); }
+.upd span { flex: 1; }
+.upd i { width: 8px; height: 8px; border-radius: 50%; background: var(--star); box-shadow: 0 0 0 0 rgba(246, 201, 69, .6); animation: pulse 2s infinite; }
+.upd:hover { background: rgba(143, 135, 245, .24); }
+.upd[disabled] { opacity: .7; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(246, 201, 69, 0); } 100% { box-shadow: 0 0 0 0 rgba(246, 201, 69, 0); } }
 
 .main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .top .burger { display: none; }

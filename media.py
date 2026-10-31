@@ -73,13 +73,62 @@ async def _transcribe_file(path: str, tmp: str) -> str:
     return await ai.transcribe(data, filename="audio.mp3") or ""
 
 
+async def _youtube_page(url: str) -> dict:
+    """Запасной путь для YouTube: описание и субтитры прямо со страницы ролика."""
+    import json
+    import re
+
+    import httpx
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                             "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+               "Accept-Language": "ru,en;q=0.8"}
+    out = {"title": "", "text": "", "has_speech": False}
+    try:
+        async with httpx.AsyncClient(headers=headers, cookies={"CONSENT": "YES+1"},
+                                     follow_redirects=True, timeout=20) as c:
+            html = (await c.get(url)).text
+            m = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*(?:var |</script>)",
+                          html, re.S)
+            if not m:
+                return out
+            pr = json.loads(m.group(1))
+            vd = pr.get("videoDetails", {})
+            out["title"] = vd.get("title", "")
+            parts = []
+            if vd.get("author"):
+                parts.append(f"Автор: {vd['author']}")
+            if vd.get("shortDescription"):
+                parts.append(f"Описание: {vd['shortDescription'][:3000]}")
+
+            tracks = (pr.get("captions", {}).get("playerCaptionsTracklistRenderer", {})
+                      .get("captionTracks", []))
+            if tracks:
+                track = next((t for t in tracks if t.get("languageCode") == "ru"),
+                             next((t for t in tracks if t.get("languageCode") == "en"), tracks[0]))
+                r = await c.get(track["baseUrl"] + "&fmt=json3")
+                if r.status_code == 200 and r.text.strip():
+                    ev = r.json().get("events", [])
+                    subs = " ".join(s.get("utf8", "") for e in ev for s in e.get("segs", []) or [])
+                    subs = " ".join(subs.split())[:8000]
+                    if subs:
+                        parts.append(f"Речь в видео (субтитры): {subs}")
+                        out["has_speech"] = True
+            out["text"] = "\n".join(parts)
+    except Exception as e:
+        print("youtube page error:", e)
+    return out
+
+
 async def from_url(url: str) -> dict:
     """{'title', 'text'} по ссылке на видео. Никогда не падает."""
     with tempfile.TemporaryDirectory() as tmp:
         try:
             meta = await asyncio.wait_for(asyncio.to_thread(_download, url, tmp), timeout=150)
         except Exception as e:
-            print("video download error:", url, e)
+            print("video download error:", url, str(e)[:200])
+            if "youtube.com" in url or "youtu.be" in url:
+                return await _youtube_page(url)
             return {"title": "", "text": ""}
 
         transcript = ""

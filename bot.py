@@ -65,11 +65,27 @@ def allowed(m: Message) -> bool:
 # ---------- команды ----------
 
 @router.message(CommandStart())
-async def start(m: Message):
+async def start(m: Message, command: CommandObject):
     if not allowed(m):
         return await m.answer(f"Это личный бот. Твой ID: <code>{m.from_user.id}</code>")
-    await db.ensure_user(m.from_user.id, m.from_user.username)
+    await db.ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
+    arg = command.args or ""
+    if arg.startswith("login_"):
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Подтвердить вход", callback_data=f"login:{arg[6:]}")
+        return await m.answer("Кто-то хочет войти в Закрома на компьютере или в браузере.\n"
+                              "Если это ты — подтверди:", reply_markup=kb.as_markup())
     await m.answer(HELP)
+
+
+@router.callback_query(F.data.startswith("login:"))
+async def login_confirm(c: CallbackQuery):
+    if c.from_user.id not in config.ALLOWED_USERS:
+        return await c.answer("Нет доступа")
+    ok = await web.confirm_login(c.data.split(":", 1)[1], c.from_user.id)
+    await c.message.edit_text("✅ Вход подтверждён, возвращайся в программу."
+                              if ok else "Ссылка для входа устарела. Нажми «Войти» в программе ещё раз.")
+    await c.answer()
 
 
 @router.message(Command("help"))
@@ -253,17 +269,6 @@ async def login(m: Message):
 
 # ---------- уборка тегов ----------
 
-CLEAN_PROMPT = """Вот теги из личной базы полезных материалов (тег — сколько записей):
-{tags}
-
-Наведи порядок: объедини синонимы и слишком мелкие теги в понятные группы,
-чтобы в итоге осталось примерно 15–25 тегов. Теги — строчные, по-русски, слова через _.
-Названия программ и брендов (unity, blender, chatgpt) можно оставить латиницей.
-
-Ответь ТОЛЬКО JSON: {{"map": {{"старый_тег": "новый_тег", ...}}}}
-Включай в map только те теги, которые меняются."""
-
-
 @router.message(Command("cleantags"))
 async def cleantags(m: Message):
     if not allowed(m):
@@ -272,13 +277,8 @@ async def cleantags(m: Message):
     if len(t) < 5:
         return await m.answer("Тегов пока мало, убирать нечего.")
     await bot_typing(m)
-    data = await ai._ask_text(CLEAN_PROMPT.format(tags="\n".join(f"{n} — {c}" for n, c in t)))
+    mapping = await core.suggest_tag_cleanup(m.from_user.id)
     current = {n for n, _ in t}
-    mapping = {}
-    for old, new in (data.get("map") or {}).items():
-        new = ai._clean_tags([new])
-        if old in current and new and new[0] != old:
-            mapping[old] = new[0]
     if not mapping:
         return await m.answer("Теги и так в порядке 👌")
 

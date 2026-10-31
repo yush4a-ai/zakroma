@@ -36,6 +36,16 @@ ALTER TABLE items ADD COLUMN IF NOT EXISTS ext_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS items_ext_idx ON items(user_id, ext_id) WHERE ext_id IS NOT NULL;
 
 ALTER TABLE items ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS favorite BOOLEAN DEFAULT false;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+
+CREATE TABLE IF NOT EXISTS login_sessions (
+    key         TEXT PRIMARY KEY,
+    user_id     BIGINT,
+    token       TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
 
 -- вход в программу/сайт: одноразовый код из бота → постоянный токен устройства
 CREATE TABLE IF NOT EXISTS login_codes (
@@ -67,11 +77,12 @@ async def init():
         await con.execute(SCHEMA)
 
 
-async def ensure_user(user_id: int, username: str | None):
+async def ensure_user(user_id: int, username: str | None, name: str | None = None):
     await pool.execute(
-        "INSERT INTO users(id, username) VALUES($1, $2) "
-        "ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username",
-        user_id, username,
+        "INSERT INTO users(id, username, name) VALUES($1, $2, $3) "
+        "ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, "
+        "name = coalesce(EXCLUDED.name, users.name)",
+        user_id, username, name,
     )
 
 
@@ -94,13 +105,14 @@ async def add_item(user_id: int, **f) -> int:
 
 # ---------- для программы/сайта ----------
 
-ITEM_COLS = ("id, kind, url, title, note, summary, tags, status, source, image_url, "
+ITEM_COLS = ("id, kind, url, title, note, summary, tags, status, favorite, source, image_url, "
              "created_at")
 
 
 async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | None = None,
                       kinds: list[str] | None = None, status: str | None = None,
-                      text: str | None = None, limit: int = 60, offset: int = 0):
+                      favorite: bool = False, text: str | None = None, sort: str = "new",
+                      limit: int = 60, offset: int = 0, with_raw: bool = False):
     where, args = ["user_id=$1"], [user_id]
 
     def add(cond, val):
@@ -113,15 +125,18 @@ async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | 
         add("? = ANY(tags)", tag)
     if kinds:
         add("kind = ANY(?)", kinds)
+    if favorite:
+        where.append("favorite")
     if status:
         add("status = ?", status)
     else:
         where.append("status <> 'trash'")
     if text:
-        add("(title ILIKE ? OR summary ILIKE ? OR note ILIKE ? OR array_to_string(tags,' ') ILIKE ?)",
-            f"%{text}%")
-    order = "id DESC"
-    sql = (f"SELECT {ITEM_COLS} FROM items WHERE {' AND '.join(where)} ORDER BY {order} "
+        add("(title ILIKE ? OR summary ILIKE ? OR note ILIKE ? OR raw_text ILIKE ? "
+            "OR array_to_string(tags,' ') ILIKE ?)", f"%{text}%")
+    order = "created_at ASC, id ASC" if sort == "old" else "created_at DESC, id DESC"
+    cols = ITEM_COLS + (", raw_text" if with_raw else "")
+    sql = (f"SELECT {cols} FROM items WHERE {' AND '.join(where)} ORDER BY {order} "
            f"LIMIT {int(limit)} OFFSET {int(offset)}")
     rows = await pool.fetch(sql, *args)
     if ids is not None:
@@ -130,12 +145,19 @@ async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | 
     return rows
 
 
+async def get_item(user_id: int, item_id: int):
+    return await pool.fetchrow(f"SELECT {ITEM_COLS}, raw_text FROM items WHERE user_id=$1 AND id=$2",
+                               user_id, item_id)
+
+
 async def update_item(user_id: int, item_id: int, **f) -> bool:
     sets, args = [], [user_id, item_id]
-    for col in ("status", "tags", "title"):
+    for col in ("status", "tags", "title", "note", "favorite"):
         if col in f and f[col] is not None:
             args.append(f[col])
             sets.append(f"{col}=${len(args)}")
+            if col == "status":
+                sets.append(f"trashed_at = CASE WHEN ${len(args)} = 'trash' THEN now() END")
     if not sets:
         return False
     res = await pool.execute(f"UPDATE items SET {', '.join(sets)} WHERE user_id=$1 AND id=$2", *args)
@@ -145,11 +167,52 @@ async def update_item(user_id: int, item_id: int, **f) -> bool:
 async def stats(user_id: int) -> dict:
     r = await pool.fetchrow(
         "SELECT count(*) FILTER (WHERE status <> 'trash') total, "
+        "count(*) FILTER (WHERE favorite AND status <> 'trash') favorite, "
         "count(*) FILTER (WHERE status = 'new') new, "
         "count(*) FILTER (WHERE status = 'try') try, "
-        "count(*) FILTER (WHERE status = 'used') used "
+        "count(*) FILTER (WHERE status = 'used') used, "
+        "count(*) FILTER (WHERE status = 'trash') trash, "
+        "count(*) FILTER (WHERE status <> 'trash' AND kind = 'reel') reel, "
+        "count(*) FILTER (WHERE status <> 'trash' AND kind = 'youtube') youtube, "
+        "count(*) FILTER (WHERE status <> 'trash' AND kind = 'link') link, "
+        "count(*) FILTER (WHERE status <> 'trash' AND kind IN ('note','voice')) note, "
+        "count(*) FILTER (WHERE status <> 'trash' AND kind IN ('photo','video')) media "
         "FROM items WHERE user_id=$1", user_id)
     return dict(r)
+
+
+async def purge_trash():
+    """Удаляем из корзины то, что пролежало там больше 30 дней."""
+    await pool.execute("DELETE FROM items WHERE status='trash' AND trashed_at < now() - interval '30 days'")
+
+
+async def get_user(user_id: int):
+    return await pool.fetchrow("SELECT id, username, name FROM users WHERE id=$1", user_id)
+
+
+# ---------- вход через Telegram ----------
+
+async def login_start(key: str):
+    await pool.execute("DELETE FROM login_sessions WHERE created_at < now() - interval '15 minutes'")
+    await pool.execute("INSERT INTO login_sessions(key) VALUES($1)", key)
+
+
+async def login_confirm(key: str, user_id: int, token: str) -> bool:
+    res = await pool.execute(
+        "UPDATE login_sessions SET user_id=$2, token=$3 WHERE key=$1 AND user_id IS NULL "
+        "AND created_at > now() - interval '15 minutes'", key, user_id, token)
+    return res.endswith("1")
+
+
+async def login_poll(key: str) -> str | None:
+    return await pool.fetchval(
+        "DELETE FROM login_sessions WHERE key=$1 AND token IS NOT NULL RETURNING token", key)
+
+
+async def import_status(user_id: int):
+    r = await pool.fetchrow("SELECT jsonb_array_length(entries) total, done FROM imports "
+                            "WHERE user_id=$1", user_id)
+    return dict(r) if r else None
 
 
 async def save_login_code(user_id: int, code: str):
@@ -258,7 +321,8 @@ async def by_tag(user_id: int, tag: str, limit: int = 15):
 
 async def set_status(user_id: int, item_id: int, status: str) -> bool:
     res = await pool.execute(
-        "UPDATE items SET status=$3 WHERE user_id=$1 AND id=$2", user_id, item_id, status
+        "UPDATE items SET status=$3, trashed_at = CASE WHEN $3 = 'trash' THEN now() END "
+        "WHERE user_id=$1 AND id=$2", user_id, item_id, status
     )
     return res.endswith("1")
 

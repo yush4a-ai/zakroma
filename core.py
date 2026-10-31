@@ -33,3 +33,29 @@ async def process_item(uid: int, *, kind, url=None, title="", note="", text="", 
     )
     return {"id": item_id, "title": res["title"], "summary": res["summary"],
             "url": url, "tags": res["tags"], "status": "new"}
+
+
+CLEAN_PROMPT = """Вот теги из личной базы полезных материалов (тег — сколько записей):
+{tags}
+
+Наведи порядок: объедини синонимы и слишком мелкие теги в понятные группы,
+чтобы в итоге осталось примерно 15–25 тегов. Теги — строчные, по-русски, слова через _.
+Названия программ и брендов (unity, blender, chatgpt) можно оставить латиницей.
+
+Ответь ТОЛЬКО JSON: {{"map": {{"старый_тег": "новый_тег", ...}}}}
+Включай в map только те теги, которые меняются."""
+
+
+async def suggest_tag_cleanup(uid: int) -> dict[str, str]:
+    """ИИ предлагает, какие теги объединить. Возвращает {старый: новый}."""
+    t = await db.user_tags(uid)
+    if len(t) < 5:
+        return {}
+    data = await ai._ask_text(CLEAN_PROMPT.format(tags="\n".join(f"{n} — {c}" for n, c in t)))
+    current = {n for n, _ in t}
+    mapping = {}
+    for old, new in (data.get("map") or {}).items():
+        new = ai._clean_tags([new])
+        if old in current and new and new[0] != old:
+            mapping[old] = new[0]
+    return mapping

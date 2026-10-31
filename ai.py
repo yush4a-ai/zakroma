@@ -48,13 +48,13 @@ def _parse_json(s: str) -> dict:
         return {}
 
 
-def _clean_tags(tags) -> list[str]:
+def _clean_tags(tags, limit: int = 4) -> list[str]:
     out = []
     for t in tags or []:
         t = str(t).strip().lower().lstrip("#").replace(" ", "_").replace("-", "_")
         if t and t not in out:
             out.append(t)
-    return out[:4]
+    return out[:limit]
 
 
 # Запасные модели Groq: если основная недоступна, пробуем следующие

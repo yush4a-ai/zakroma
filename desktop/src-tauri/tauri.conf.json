@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zakroma",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.yush4a.zakroma",
   "build": {
     "frontendDist": "../dist"
@@ -13,11 +13,27 @@
         "label": "main",
         "title": "Закрома",
         "url": "https://zakroma-production.up.railway.app/",
-        "width": 1280,
-        "height": 820,
+        "width": 1360,
+        "height": 860,
         "minWidth": 820,
         "minHeight": 560,
-        "center": true
+        "center": true,
+        "backgroundColor": "#0e1016"
+      },
+      {
+        "label": "quick",
+        "title": "Закрома — быстрый поиск",
+        "url": "https://zakroma-production.up.railway.app/#quick",
+        "width": 680,
+        "height": 560,
+        "center": true,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
       }
     ],
     "security": {
@@ -26,7 +42,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,7 +53,9 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["Russian"],
+        "languages": [
+          "Russian"
+        ],
         "displayLanguageSelector": false
       }
     }

@@ -32,6 +32,9 @@ PROMPT = """Ты — помощник в личной базе полезных 
   "summary": "1-2 предложения по-русски: что это и чем полезно",
   "tags": ["2-4 тега"]}}
 
+Если это видео и есть расшифровка речи — выжимка должна говорить, ЧТО конкретно показывают или советуют
+(названия программ, нейросетей, сайтов, приёмов), а не общие слова вроде «полезное видео».
+
 Правила для тегов: строчные, по-русски, слова через _, без #.
 В первую очередь бери подходящие из существующих тегов. Новый тег — только если ни один не подходит.
 Если содержимого почти нет, опирайся на заголовок, ссылку и пометку."""
@@ -152,10 +155,10 @@ def rank(query_vec: list[float], rows, top: int = 5, min_score: float = 0.25) ->
 
 # ---------- голосовые ----------
 
-async def transcribe(audio: bytes) -> str | None:
+async def transcribe(audio: bytes, filename: str = "voice.ogg") -> str | None:
     if not groq:
         return None
     f = io.BytesIO(audio)
-    f.name = "voice.ogg"
+    f.name = filename
     r = await groq.audio.transcriptions.create(model=config.WHISPER_MODEL, file=f)
     return r.text

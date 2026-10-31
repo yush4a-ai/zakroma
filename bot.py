@@ -14,6 +14,7 @@ import ai
 import config
 import db
 import extract
+import media
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
@@ -156,7 +157,7 @@ async def save(m: Message, *, kind, url=None, title="", note="", text="", image=
         source = getattr(chat, "title", None) or getattr(chat, "full_name", None) or "переслано"
 
     emb_text = " ".join(x for x in [res["title"], res["summary"], " ".join(res["tags"]),
-                                    note, text[:1000]] if x)
+                                    note, text[:1500]] if x)
     item_id = await db.add_item(
         uid, kind=kind, url=url, title=res["title"], raw_text=text, note=note,
         summary=res["summary"], tags=res["tags"], source=source,
@@ -180,6 +181,28 @@ async def voice(m: Message, bot: Bot):
     if not text:
         return await m.answer("Не смог разобрать голосовое 😕")
     await save(m, kind="voice", note=text, text=text)
+
+
+@router.message(F.video | F.video_note | F.document.mime_type.startswith("video/"))
+async def video_file(m: Message, bot: Bot):
+    if not allowed(m):
+        return
+    file = m.video or m.video_note or m.document
+    if (file.file_size or 0) > 20 * 1024 * 1024:
+        return await m.answer("Видео больше 20 МБ: Telegram не даёт ботам скачивать такие. "
+                              "Кинь лучше ссылку на него.")
+    status = await m.answer("🎬 Смотрю видео… это может занять до минуты")
+    buf = io.BytesIO()
+    await bot.download(file, destination=buf)
+    speech = await media.from_bytes(buf.getvalue())
+    caption = m.caption or ""
+    urls = extract.find_urls(caption)
+    text = "\n".join(x for x in [caption, f"Речь в видео: {speech}" if speech else ""] if x)
+    await save(m, kind="video", url=urls[0] if urls else None, note=caption, text=text)
+    try:
+        await status.delete()
+    except Exception:
+        pass
 
 
 @router.message(F.photo)
@@ -216,9 +239,26 @@ async def text_msg(m: Message, bot: Bot):
     note = note.strip()
 
     for u in urls[:5]:
+        dup = await db.find_by_url(m.from_user.id, u)
+        if dup and dup["status"] != "trash":
+            await m.answer("Это уже есть в закромах 👇\n\n" + card(dup),
+                           disable_web_page_preview=True)
+            continue
+
         data = await extract.fetch(u)
-        await save(m, kind=extract.detect_kind(u), url=u, title=data["title"],
-                   note=note, text=data["text"])
+        if media.is_video_url(u):
+            status = await m.answer("🎬 Смотрю видео… это может занять до минуты")
+            v = await media.from_url(u)
+            title = v["title"] or data["title"]
+            text = "\n".join(x for x in [v["text"], data["text"]] if x)
+            await save(m, kind=extract.detect_kind(u), url=u, title=title, note=note, text=text)
+            try:
+                await status.delete()
+            except Exception:
+                pass
+        else:
+            await save(m, kind=extract.detect_kind(u), url=u, title=data["title"],
+                       note=note, text=data["text"])
 
 
 async def main():

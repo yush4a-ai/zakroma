@@ -20,7 +20,7 @@ def detect_kind(url: str) -> str:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u:
         return "youtube"
-    if "instagram.com" in u:
+    if "instagram.com" in u or "tiktok.com" in u:
         return "reel"
     return "link"
 

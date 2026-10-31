@@ -165,6 +165,6 @@ async def start(bot):
         app.router.add_static("/static/", STATIC)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("WEB_PORT", 8080))  # домен Railway смотрит на порт 8080
     await web.TCPSite(runner, "0.0.0.0", port).start()
     print(f"Веб-интерфейс на порту {port}")

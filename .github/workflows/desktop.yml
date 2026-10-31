@@ -1,0 +1,46 @@
+name: Сборка программы для Windows
+
+on:
+  push:
+    branches: [main, desktop]
+    paths: ["desktop/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Зависимости
+        working-directory: desktop
+        run: npm install
+
+      - name: Иконки
+        working-directory: desktop
+        run: npx tauri icon app-icon.png
+
+      - name: Сборка и релиз
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: desktop-v__VERSION__-${{ github.run_number }}
+          releaseName: "Закрома для Windows (сборка ${{ github.run_number }})"
+          releaseBody: "Скачай файл Zakroma_..._x64-setup.exe ниже и запусти."
+          releaseDraft: false
+          prerelease: false

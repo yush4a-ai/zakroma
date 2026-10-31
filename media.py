@@ -84,6 +84,10 @@ async def _youtube_page(url: str) -> dict:
                              "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
                "Accept-Language": "ru,en;q=0.8"}
     out = {"title": "", "text": "", "has_speech": False}
+    # shorts и youtu.be приводим к обычной ссылке — у неё самая полная страница
+    vid = re.search(r"(?:v=|shorts/|youtu\.be/|embed/)([\w-]{11})", url)
+    if vid:
+        url = f"https://www.youtube.com/watch?v={vid.group(1)}"
     try:
         async with httpx.AsyncClient(headers=headers, cookies={"CONSENT": "YES+1"},
                                      follow_redirects=True, timeout=20) as c:
@@ -91,6 +95,7 @@ async def _youtube_page(url: str) -> dict:
             m = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*(?:var |</script>)",
                           html, re.S)
             if not m:
+                print("youtube page: нет данных о ролике на странице", url)
                 return out
             pr = json.loads(m.group(1))
             vd = pr.get("videoDetails", {})
@@ -115,6 +120,8 @@ async def _youtube_page(url: str) -> dict:
                         parts.append(f"Речь в видео (субтитры): {subs}")
                         out["has_speech"] = True
             out["text"] = "\n".join(parts)
+            print(f"youtube page: описание {len(vd.get('shortDescription', ''))} симв., "
+                  f"дорожек субтитров {len(tracks)}, речь {'есть' if out['has_speech'] else 'нет'}")
     except Exception as e:
         print("youtube page error:", e)
     return out

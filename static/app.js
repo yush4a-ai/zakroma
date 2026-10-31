@@ -57,7 +57,7 @@ function highlight(text, words) {
   (words || []).filter(w => w.length > 1).sort((a, b) => b.length - a.length).forEach(w => {
     out = out.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>");
   });
-  return out;
+  return out.replace(/<\/mark>(\s+)<mark>/g, "$1");
 }
 
 function toast(text, action) {
@@ -116,9 +116,11 @@ function logout() {
 const FLOATS = ["#нейросети", "#монтаж", "#unity", "#стрим", "#идеи", "#игры", "#графика", "#туториал", "#blender", "#звук", "#инструменты", "#рилсы"];
 function renderLogin(state = "start", url = "") {
   stopLoginPoll();
-  const floats = FLOATS.map((t, i) => {
-    const x = (i * 37) % 100, y = (i * 53 + 7) % 100, r = ((i * 13) % 14) - 7;
-    return `<span style="left:${x}%;top:${y}%;transform:rotate(${r}deg)">${t}</span>`;
+  // теги раскладываем по краям сетки 4×4, не залезая под карточку и за край экрана
+  const SPOTS = [[6,8],[30,5],[62,9],[84,6],[4,34],[86,30],[8,60],[83,57],[5,86],[28,90],[72,95],[86,84],[18,22],[74,20],[16,74],[76,72]];
+  const floats = FLOATS.concat(["#ассеты", "#озвучка", "#шейдеры", "#ai"]).slice(0, SPOTS.length).map((t, i) => {
+    const [x, y] = SPOTS[i], r = ((i * 13) % 12) - 6;
+    return `<span style="left:${x}%;top:${y}%;transform:translate(-${x}%,-${y}%) rotate(${r}deg)">${t}</span>`;
   }).join("");
   const kinds = [["clapperboard", "Рилсы"], ["youtube", "YouTube"], ["file-text", "Статьи"], ["lightbulb", "Заметки"]]
     .map(([i, n]) => `<div>${ico(i)}<span>${n}</span></div>`).join("");
@@ -130,11 +132,11 @@ function renderLogin(state = "start", url = "") {
       <button class="btn ghost sm" id="back">Отмена</button>` : `
       <p class="lead">Всё полезное — в одном месте</p>
       <div class="kinds">${kinds}</div>
-      <button class="btn accent big" id="tg">${ico("send")} Войти через Telegram ${ico("arrow-right")}</button>
+      <button class="btn accent big" id="tg">${ico("send")} Войти через Telegram <span class="arr">${ico("arrow-right")}</span></button>
       <div class="or">или с телефона</div>
       <div class="qr" id="qr" aria-label="QR-код для входа"></div>
       <p class="sub" style="margin:10px 0 0">Наведи камеру и нажми «Старт» в боте</p>`;
-  $app.innerHTML = `<div class="login"><div class="floats">${floats}</div>
+  $app.innerHTML = `<div class="login"><div class="bar-top">${LOGO}Закрома</div><div class="floats">${floats}</div>
     <div class="login-card"><div class="mark">${LOGO}</div><h1>Закрома</h1>${body}
     <small>Входить нужно один раз на каждом устройстве.</small></div></div>`;
   icons();
@@ -149,7 +151,8 @@ function renderLogin(state = "start", url = "") {
     const qrEl = document.getElementById("qr");
     if (qrEl && window.qrcode) {
       const q = qrcode(0, "M"); q.addData(sess.url); q.make();
-      qrEl.innerHTML = q.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+      qrEl.innerHTML = q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }) + `<span class="tgb">${ico("send")}</span>`;
+      icons();
     }
     const btn = document.getElementById("tg");
     if (btn) btn.onclick = () => { openUrl(sess.url); renderLogin("wait", sess.url); pollLogin(sess.key); };
@@ -338,7 +341,7 @@ function cardHtml(it) {
   const star = it.favorite ? `<span class="star">${ico("star")}</span>` : "";
   if (it.image && !note) {
     return `<article class="card${done}" data-id="${it.id}" tabindex="0">
-      <div class="thumb ${it.kind === "reel" ? "tall" : ""}"><img src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback>
+      <div class="thumb ${it.kind === "reel" && S.route.view === "all" ? "tall" : ""}"><img src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback>
         <span class="kind">${ico(k.icon)}</span>${star}<button class="dots more" data-act="menu" aria-label="Ещё">${ico("ellipsis-vertical")}</button></div>
       <div class="card-body"><div class="card-title"><h3>${esc(it.title)}</h3></div>
         ${sum ? `<p class="sum">${esc(sum)}</p>` : ""}${tags}${actionsHtml(it)}</div></article>`;
@@ -398,7 +401,8 @@ function renderFeed(skeleton = false) {
   let body;
   if (skeleton) body = `<div class="masonry">${[0, 1, 2, 3].map(i => `<div class="col">${[260, 190, 300].map(h => `<div class="skel" style="height:${h - i * 12}px"></div>`).join("")}</div>`).join("")}</div>`;
   else if (!S.items.length) body = emptyHtml();
-  else body = list ? `<div class="rows">${S.items.map(rowHtml).join("")}</div>` : masonry(S.items);
+  else body = list ? `<div class="rows">${S.items.map(rowHtml).join("")}</div>`
+    : S.route.view === "all" ? masonry(S.items) : `<div class="grid">${S.items.map(cardHtml).join("")}</div>`;
   const more = !skeleton && S.more ? `<div class="more-wrap"><button class="btn" id="more">Показать ещё</button></div>` : "";
   el.innerHTML = headHtml() + body + more;
   icons();
@@ -511,6 +515,7 @@ async function openItem(id) {
   wrap.innerHTML = `<div class="scrim"></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-label="${esc(it.title)}">
     <button class="btn icon ghost x" data-d="close" aria-label="Закрыть">${ico("x")}</button>
+    <button class="dots dmenu" data-d="menu" aria-label="Ещё">${ico("ellipsis-vertical")}</button>
     <div class="scroll">
       ${it.image ? `<div class="hero"><img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.remove()">
         ${it.url ? `<button class="btn sm open" data-d="open">Открыть оригинал ${ico("external-link")}</button>` : ""}
@@ -576,6 +581,7 @@ async function openItem(id) {
     const b = e.target.closest("[data-d]"); if (!b) return;
     const d = b.dataset.d;
     if (d === "close") closeDrawer();
+    else if (d === "menu") showMenu(listItem || it, b);
     else if (d === "open") openUrl(it.url);
     else if (d === "speech") { const s = wrap.querySelector("#speech"); s.classList.toggle("open"); b.innerHTML = s.classList.contains("open") ? `Свернуть ${ico("chevron-up")}` : `Показать полностью ${ico("chevron-down")}`; icons(); }
     else if (d === "try") { save({ status: "try" }, "Добавлено в «Попробовать»"); closeDrawer(); loadList(); }
@@ -593,8 +599,9 @@ async function renderTriage() {
   const el = document.getElementById("content");
   el.innerHTML = `<div class="loading">Загружаю…</div>`;
   try {
-    const { items } = await api("/api/items?view=new&sort=new");
+    const [{ items }, back] = await Promise.all([api("/api/items?view=new&sort=new"), api("/api/items?view=all").catch(() => ({ items: [] }))]);
     T.queue = items; T.total = S.stats?.new || items.length; T.pos = 0;
+    T.bg = back.items.length ? `<div class="grid">${back.items.slice(0, 12).map(i => cardHtml(i)).join("")}</div>` : "";
   } catch (e) { if (e.message !== "auth") toast(e.message); return; }
   drawTriage();
 }
@@ -615,17 +622,19 @@ function drawTriage() {
   }
   const k = KIND[it.kind] || KIND.link;
   const note = it.kind === "note" || it.kind === "voice";
-  el.innerHTML = `<div class="triage">${head}
+  const bg = T.bg || "";
+  el.innerHTML = `<div class="triage"><div class="triage-bg" aria-hidden="true">${bg}</div>${head}
     <article class="tcard ${note ? "note-card" : ""}" id="tcard">
       ${it.image && !note ? `<div class="thumb"><img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.remove()">
-        <span class="kind">${ico(k.icon)}</span>${it.url ? `<button class="btn sm open" id="topen">Открыть оригинал ${ico("external-link")}</button>` : ""}</div>` : ""}
+        <span class="kind">${ico(k.icon)}</span>${it.url ? `<button class="btn sm open" id="topen">Открыть оригинал ${ico("external-link")}</button>` : ""}
+        <button class="dots" id="tmenu" aria-label="Ещё">${ico("ellipsis-vertical")}</button></div>` : ""}
       <div class="body">
         <h2>${esc(it.title)}</h2>
         <div class="meta"><div class="who"><span class="avatar">${it.source ? esc(initials(it.source)) : ico(k.icon)}</span>
           <div><b>${esc(it.source || host(it.url) || k.name)}</b><span>${esc(k.name)}</span></div></div>
           <span class="saved">${ico("calendar")} Сохранено ${fmtDate(it.created_at)}</span></div>
         ${it.summary || it.note ? `<section class="sec"><h4>${ico("sparkles")} ${it.summary ? "Выжимка от ИИ" : "Заметка"}</h4><div class="box"><p>${esc(it.summary || it.note)}</p></div></section>` : ""}
-        ${it.tags.length ? `<div class="tags">${it.tags.map(t => `<span class="tag">#${esc(t)}</span>`).join("")}</div>` : ""}
+        <div class="tag-edit" id="ttags">${it.tags.map(t => `<span class="tag">#${esc(t)}</span>`).join("")}<button class="add" id="taddtag">${ico("plus")} Добавить тег</button></div>
         ${!it.image && it.url ? `<button class="btn sm" id="topen" style="align-self:flex-start">${ico("external-link")} Открыть оригинал</button>` : ""}
       </div></article>
     <div class="tactions">
@@ -638,6 +647,18 @@ function drawTriage() {
   icons();
   document.getElementById("finish").onclick = () => go("#/all");
   const o = document.getElementById("topen"); if (o) o.onclick = () => openUrl(it.url);
+  const tm = document.getElementById("tmenu"); if (tm) tm.onclick = () => showMenu(it, tm);
+  const ta = document.getElementById("taddtag");
+  if (ta) ta.onclick = () => {
+    const inp = document.createElement("input"); inp.placeholder = "новый тег"; ta.replaceWith(inp); inp.focus();
+    const commit = () => {
+      const v = inp.value.trim().replace(/^#/, "").toLowerCase().replace(/\s+/g, "_");
+      if (v && !it.tags.includes(v)) { it.tags.push(v); api("/api/items/" + it.id, { method: "PATCH", body: { tags: it.tags } }).catch(e => toast(e.message)); }
+      drawTriage();
+    };
+    inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === "Enter") commit(); if (ev.key === "Escape") drawTriage(); };
+    inp.onblur = commit;
+  };
   el.querySelectorAll("[data-t]").forEach(b => b.onclick = () => triage(b.dataset.t));
 }
 let triageBusy = false;

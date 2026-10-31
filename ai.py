@@ -54,6 +54,41 @@ def _clean_tags(tags) -> list[str]:
     return out[:4]
 
 
+# Запасные модели Groq: если основная недоступна, пробуем следующие
+FALLBACK_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
+_working_model: str | None = None
+
+
+async def _ask_text(prompt: str) -> dict:
+    global _working_model
+    models = [config.TEXT_MODEL]
+    if config.LLM_BASE_URL == config.GROQ_BASE_URL:
+        models += [m for m in FALLBACK_MODELS if m != config.TEXT_MODEL]
+    if _working_model in models:
+        models.remove(_working_model)
+        models.insert(0, _working_model)
+
+    for model in models:
+        kwargs = {}
+        if model.startswith("openai/gpt-oss"):
+            kwargs["extra_body"] = {"reasoning_effort": "low"}
+        try:
+            resp = await llm.chat.completions.create(
+                model=model, max_tokens=1500,
+                response_format={"type": "json_object"},
+                messages=[{"role": "user", "content": prompt}],
+                **kwargs,
+            )
+            data = _parse_json(resp.choices[0].message.content or "")
+            if data:
+                _working_model = model
+                return data
+            print(f"analyze: пустой ответ от {model}")
+        except Exception as e:
+            print(f"analyze error ({model}):", e)
+    return {}
+
+
 async def analyze(kind, url, title, note, text, existing_tags, image: bytes | None = None) -> dict:
     prompt = PROMPT.format(
         kind=kind, url=url or "—", title=title or "—", note=note or "—",
@@ -61,27 +96,23 @@ async def analyze(kind, url, title, note, text, existing_tags, image: bytes | No
         tags=", ".join(existing_tags[:80]) or "пока нет",
     )
     data = {}
-    try:
-        if image and groq:
-            # скриншот: модель, которая видит картинки
+    if image and groq:
+        # скриншот: модель, которая видит картинки
+        try:
             content = [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {
                     "url": "data:image/jpeg;base64," + base64.b64encode(image).decode()}},
             ]
             resp = await groq.chat.completions.create(
-                model=config.VISION_MODEL, max_tokens=400,
+                model=config.VISION_MODEL, max_tokens=600,
                 messages=[{"role": "user", "content": content}],
             )
-        else:
-            resp = await llm.chat.completions.create(
-                model=config.TEXT_MODEL, max_tokens=400,
-                response_format={"type": "json_object"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-        data = _parse_json(resp.choices[0].message.content or "")
-    except Exception as e:
-        print("analyze error:", e)
+            data = _parse_json(resp.choices[0].message.content or "")
+        except Exception as e:
+            print("vision error:", e)
+    if not data:
+        data = await _ask_text(prompt)
     return {
         "title": (data.get("title") or title or note or url or "Без названия")[:120],
         "summary": data.get("summary", ""),

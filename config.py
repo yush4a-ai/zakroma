@@ -20,7 +20,7 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-large-v3-turbo")
 #   LLM_BASE_URL=https://api.deepseek.com  LLM_API_KEY=sk-...  TEXT_MODEL=deepseek-chat
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", GROQ_BASE_URL)
 LLM_API_KEY = os.environ.get("LLM_API_KEY", GROQ_API_KEY)
-TEXT_MODEL = os.environ.get("TEXT_MODEL", "llama-3.3-70b-versatile")
+TEXT_MODEL = os.environ.get("TEXT_MODEL", "openai/gpt-oss-120b")
 
 if not LLM_API_KEY:
     raise RuntimeError("Нужен GROQ_API_KEY (или LLM_API_KEY для другого провайдера)")

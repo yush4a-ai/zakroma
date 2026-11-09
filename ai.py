@@ -9,11 +9,12 @@ import numpy as np
 from openai import AsyncOpenAI
 
 import config
+from embedding_client import EmbeddingWorker
 
 llm = AsyncOpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 groq = (AsyncOpenAI(api_key=config.GROQ_API_KEY, base_url=config.GROQ_BASE_URL)
         if config.GROQ_API_KEY else None)
-_embedder = None
+_embedding_worker = EmbeddingWorker(config.EMBED_MODEL)
 
 PROMPT = """Ты — помощник в личной базе полезных материалов «Закрома».
 Пользователь сохранил материал. Твоя задача — понять, о чём он, чтобы потом его легко было найти.
@@ -134,21 +135,8 @@ async def analyze(kind, url, title, note, text, existing_tags, image: bytes | No
 
 # ---------- поиск по смыслу ----------
 
-def _get_embedder():
-    global _embedder
-    if _embedder is None:
-        from fastembed import TextEmbedding
-        _embedder = TextEmbedding(config.EMBED_MODEL)
-    return _embedder
-
-
-def _embed_sync(text: str) -> list[float]:
-    vec = next(iter(_get_embedder().embed([text[:2000]])))
-    return [float(x) for x in vec]
-
-
 async def embed(text: str) -> list[float]:
-    return await asyncio.to_thread(_embed_sync, text)
+    return await _embedding_worker.embed(text)
 
 
 def rank(query_vec: list[float], rows, top: int = 5, min_score: float = 0.25) -> list[int]:

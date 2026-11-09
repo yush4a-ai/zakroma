@@ -413,7 +413,10 @@ async def main():
     await web.start(bot)
     await importer.resume_all(bot)
     logging.info("Закрома запущены")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await ai._embedding_worker.aclose()
 
 
 if __name__ == "__main__":

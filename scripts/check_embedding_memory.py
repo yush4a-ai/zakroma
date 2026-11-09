@@ -50,9 +50,11 @@ print(json.dumps([[float(x) for x in next(iter(model.embed([text[:2000]])))]
         await asyncio.wait_for(child.wait(), 10)
         assert not Path(f"/proc/{child.pid}").exists(), "idle model still running"
         assert "fastembed" not in sys.modules, "model loaded into parent"
+        memory = dict(line.split() for line in Path("/sys/fs/cgroup/memory.stat").read_text().splitlines())
         print(json.dumps({"vectors_match": True, "max_vector_difference": max_diff,
                           "seconds_per_request": timings, "model_worker_rss_kb": child_rss,
-                          "idle_worker_exited": True, "parent_rss_kb": rss_kb("self")}))
+                          "idle_worker_exited": True, "parent_rss_kb": rss_kb("self"),
+                          "container_file_cache_bytes": int(memory["file"])}))
     finally:
         await worker.aclose()
 

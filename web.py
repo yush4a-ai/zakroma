@@ -42,6 +42,7 @@ def _item(r, full: bool = False) -> dict:
         "status": r["status"], "favorite": bool(r["favorite"]), "source": r["source"],
         "image": _thumb(r),
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "added_at": r["added_at"].isoformat() if r["added_at"] else None,
     }
     if full:
         raw = r["raw_text"] or ""
@@ -151,6 +152,8 @@ def _filters(request):
          "sort": q.get("sort", "new")}
     if view == "favorite":
         f["favorite"] = True
+    elif view == "recent":
+        f["recent"] = True
     elif view in ("new", "try", "used", "trash"):
         f["status"] = view
     return f

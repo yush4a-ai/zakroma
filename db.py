@@ -4,6 +4,7 @@ import asyncpg
 from config import DATABASE_URL
 
 pool: asyncpg.Pool | None = None
+RECENT_CONDITION = "added_at >= now() - interval '7 days'"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -41,6 +42,15 @@ ALTER TABLE items ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS thumb_key TEXT;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS thumb_tries INT DEFAULT 0;
+
+-- Время добавления в Закрома отдельно от даты исходного сообщения при импорте.
+-- Старым записям оставляем известную дату, чтобы обновление не сделало их новыми.
+ALTER TABLE items ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ;
+UPDATE items SET added_at = coalesce(created_at, now()) WHERE added_at IS NULL;
+ALTER TABLE items ALTER COLUMN added_at SET DEFAULT now();
+ALTER TABLE items ALTER COLUMN added_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS items_added_idx ON items(user_id, added_at DESC)
+    WHERE status <> 'trash';
 
 -- обложки храним у себя: ссылки Instagram на картинки протухают через пару дней
 CREATE TABLE IF NOT EXISTS thumbs (
@@ -115,12 +125,13 @@ async def add_item(user_id: int, **f) -> int:
 # ---------- для программы/сайта ----------
 
 ITEM_COLS = ("id, kind, url, title, note, summary, tags, status, favorite, source, image_url, "
-             "thumb_key, created_at")
+             "thumb_key, created_at, added_at")
 
 
 async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | None = None,
                       kinds: list[str] | None = None, status: str | None = None,
-                      favorite: bool = False, text: str | None = None, sort: str = "new",
+                      favorite: bool = False, recent: bool = False,
+                      text: str | None = None, sort: str = "new",
                       limit: int = 60, offset: int = 0, with_raw: bool = False):
     where, args = ["user_id=$1"], [user_id]
 
@@ -136,6 +147,8 @@ async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | 
         add("kind = ANY(?)", kinds)
     if favorite:
         where.append("favorite")
+    if recent:
+        where.append(RECENT_CONDITION)
     if status:
         add("status = ?", status)
     else:
@@ -144,6 +157,8 @@ async def query_items(user_id: int, *, ids: list[int] | None = None, tag: str | 
         add("(title ILIKE ? OR summary ILIKE ? OR note ILIKE ? OR raw_text ILIKE ? "
             "OR array_to_string(tags,' ') ILIKE ?)", f"%{text}%")
     order = "created_at ASC, id ASC" if sort == "old" else "created_at DESC, id DESC"
+    if recent:
+        order = "added_at DESC, id DESC"
     cols = ITEM_COLS + (", raw_text" if with_raw else "")
     sql = (f"SELECT {cols} FROM items WHERE {' AND '.join(where)} ORDER BY {order} "
            f"LIMIT {int(limit)} OFFSET {int(offset)}")
@@ -177,6 +192,7 @@ async def stats(user_id: int) -> dict:
     r = await pool.fetchrow(
         "SELECT count(*) FILTER (WHERE status <> 'trash') total, "
         "count(*) FILTER (WHERE favorite AND status <> 'trash') favorite, "
+        f"count(*) FILTER (WHERE status <> 'trash' AND {RECENT_CONDITION}) recent, "
         "count(*) FILTER (WHERE status = 'new') new, "
         "count(*) FILTER (WHERE status = 'try') try, "
         "count(*) FILTER (WHERE status = 'used') used, "

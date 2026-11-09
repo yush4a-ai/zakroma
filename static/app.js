@@ -221,6 +221,7 @@ function renderSide() {
     <a class="logo" href="#/all">${LOGO}<span>Закрома</span></a>
     <nav class="nav">
       ${link("all", "layout-grid", "Все", s.total ?? "")}
+      ${link("recent", "clock", "Недавнее", s.recent ?? "")}
       ${link("favorite", "heart", "Избранное", s.favorite ?? "")}
       ${link("try", "play", "Попробовать", s.try ?? "")}
       ${link("used", "check-check", "Использовал", s.used ?? "")}
@@ -246,6 +247,7 @@ async function refreshMeta() {
 /* ---------- лента ---------- */
 const VIEWS = {
   all:      { title: "Все", sub: "" },
+  recent:   { title: "Недавнее", sub: "Добавлено в Закрома за последние 7 дней" },
   favorite: { title: "Избранное", sub: "Материалы, которые ты отметил как важные" },
   try:      { title: "Попробовать", sub: "То, что хочется применить на деле" },
   used:     { title: "Использовал", sub: "Уже пригодилось" },
@@ -259,7 +261,7 @@ function listQuery(offset = 0) {
   else if (r.view === "kind") p.set("kind", r.kindPath);
   else p.set("view", r.view);
   if (S.kind && r.view !== "kind") p.set("kind", S.kind);
-  p.set("sort", S.sort);
+  p.set("sort", r.view === "recent" ? "new" : S.sort);
   if (offset) p.set("offset", offset);
   return "/api/items?" + p;
 }
@@ -314,6 +316,7 @@ function filtersHtml() {
     return `<button class="pill ${S.kind === k ? "on" : ""}" data-kind="${k}">${n}${c != null ? ` <span class="n num">${c}</span>` : ""}</button>`;
   }).join("");
   const sort = isSearch ? `<span class="select">${ico("arrow-down-up")}По релевантности</span>` :
+    r.view === "recent" ? `<span class="select">${ico("arrow-down-up")}Сначала новые</span>` :
     `<label class="select">${ico("arrow-down-up")}<span class="sr">Сортировка</span><select id="sort">
       <option value="new" ${S.sort === "new" ? "selected" : ""}>Сначала новые</option>
       <option value="old" ${S.sort === "old" ? "selected" : ""}>Сначала старые</option></select>${ico("chevron-down", "chev")}</label>`;
@@ -327,7 +330,7 @@ function actionsHtml(it, compact) {
   const r = S.route.view;
   const primary = it.status === "trash"
     ? `<button class="btn sm accent" data-act="restore">${ico("undo-2")} Вернуть</button>`
-    : (r === "all" || r === "tag" || r === "kind" || r === "new") && it.status !== "try"
+    : (r === "all" || r === "recent" || r === "tag" || r === "kind" || r === "new") && it.status !== "try"
       ? `<button class="btn sm accent" data-act="try">${ico("play")} Попробовать</button>`
       : `<button class="btn sm accent" data-act="open">${ico("play")} Открыть</button>`;
   const used = it.status === "trash"
@@ -368,7 +371,7 @@ function rowHtml(it) {
     : `<div class="thumb empty">${ico(k.icon)}</div>`;
   const match = it.match != null ? `<div class="match"><span class="why">${ico("sparkles")} ${it.match_kind === "meaning" ? "Совпадение по смыслу" : "Совпадение по словам"}</span>
       <p>${highlight(it.match, it.highlight)}</p></div>` :
-    `<div class="match"><span class="why">${ico("calendar")} Сохранено ${fmtDate(it.created_at)}</span><p>${esc(it.note || host(it.url) || "")}</p></div>`;
+    `<div class="match"><span class="why">${ico("calendar")} Сохранено ${fmtDate(it.added_at || it.created_at)}</span><p>${esc(it.note || host(it.url) || "")}</p></div>`;
   const favBtn = `<button class="btn sm ${it.favorite ? "on" : ""}" data-act="fav">${ico("star")} ${it.favorite ? "В избранном" : "В избранное"}</button>`;
   return `<article class="row" data-id="${it.id}" tabindex="0">${thumb}
     <div class="info"><h3>${esc(it.title)}</h3><p>${esc(it.summary || it.note || "")}</p>${tags}</div>${match}
@@ -393,10 +396,29 @@ function emptyHtml() {
   const [icon, h, p] =
     r === "search" ? ["search-x", "Ничего не нашлось", "Попробуй описать другими словами — поиск понимает смысл, а не только точные совпадения."] :
     r === "favorite" ? ["star", "Пока пусто", "Отмечай важное звёздочкой в карточке — оно соберётся здесь."] :
+    r === "recent" ? ["clock", "Пока ничего нового", "Здесь появятся материалы, добавленные в Закрома за последние 7 дней."] :
     r === "trash" ? ["trash-2", "Корзина пуста", "Удалённое попадает сюда и хранится 30 дней."] :
     r === "try" ? ["play", "Нечего пробовать", "Нажимай «Попробовать» на карточках — здесь будет список дел."] :
     ["inbox", "Здесь пока пусто", `Кинь ссылку или заметку боту @${esc(S.me?.bot || "vzakroma_bot")} — она появится здесь.`];
   return `<div class="empty-state">${ico(icon)}<h2>${h}</h2><p>${p}</p></div>`;
+}
+
+function recentHtml(list) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const groups = [
+    { key: "today", title: "Сегодня", items: [] },
+    { key: "yesterday", title: "Вчера", items: [] },
+    { key: "earlier", title: "Ранее", items: [] },
+  ];
+  S.items.forEach(it => {
+    const saved = new Date(it.added_at || it.created_at);
+    groups[saved >= today ? 0 : saved >= yesterday ? 1 : 2].items.push(it);
+  });
+  return groups.filter(g => g.items.length).map(g => `<section class="recent-group" aria-labelledby="recent-${g.key}">
+    <h2 class="recent-title" id="recent-${g.key}">${g.title}<span class="num">${g.items.length}</span></h2>
+    <div class="${list ? "rows" : "grid"}">${g.items.map(list ? rowHtml : cardHtml).join("")}</div></section>`).join("");
 }
 
 function renderFeed(skeleton = false) {
@@ -406,6 +428,7 @@ function renderFeed(skeleton = false) {
   let body;
   if (skeleton) body = `<div class="masonry">${[0, 1, 2, 3].map(i => `<div class="col">${[260, 190, 300].map(h => `<div class="skel" style="height:${h - i * 12}px"></div>`).join("")}</div>`).join("")}</div>`;
   else if (!S.items.length) body = emptyHtml();
+  else if (S.route.view === "recent") body = recentHtml(list);
   else body = list ? `<div class="rows">${S.items.map(rowHtml).join("")}</div>`
     : S.route.view === "all" ? masonry(S.items) : `<div class="grid">${S.items.map(cardHtml).join("")}</div>`;
   const more = !skeleton && S.more ? `<div class="more-wrap"><button class="btn" id="more">Показать ещё</button></div>` : "";
@@ -440,7 +463,7 @@ function renderFeed(skeleton = false) {
   });
 }
 
-const relayout = debounce(() => { if (["all", "favorite", "try", "used", "trash", "tag", "kind"].includes(S.route.view) && S.layout === "grid" && S.items.length) renderFeed(); }, 150);
+const relayout = debounce(() => { if (["all", "recent", "favorite", "try", "used", "trash", "tag", "kind"].includes(S.route.view) && S.layout === "grid" && S.items.length) renderFeed(); }, 150);
 window.addEventListener("resize", relayout);
 
 /* ---------- действия с записями ---------- */
@@ -547,7 +570,7 @@ async function openItem(id) {
       <div class="meta">
         <div class="who"><span class="avatar">${it.source ? esc(initials(it.source)) : ico(k.icon)}</span>
           <div><b>${esc(it.source || host(it.url) || k.name)}</b><span>${esc(k.name)}${it.url ? " · " + esc(host(it.url)) : ""}</span></div></div>
-        <span class="saved">${ico("calendar")} Сохранено ${fmtDate(it.created_at)}</span>
+        <span class="saved">${ico("calendar")} Сохранено ${fmtDate(it.added_at || it.created_at)}</span>
       </div>
       ${it.summary ? `<section class="sec"><h4>${ico("sparkles")} Выжимка от ИИ</h4><div class="box"><p>${esc(it.summary)}</p></div></section>` : ""}
       ${it.speech ? `<section class="sec"><h4>${ico("audio-lines")} Что говорят в видео</h4><div class="box speech" id="speech"><p>${esc(it.speech)}</p>
@@ -655,7 +678,7 @@ function drawTriage() {
         <h2>${esc(it.title)}</h2>
         <div class="meta"><div class="who"><span class="avatar">${it.source ? esc(initials(it.source)) : ico(k.icon)}</span>
           <div><b>${esc(it.source || host(it.url) || k.name)}</b><span>${esc(k.name)}</span></div></div>
-          <span class="saved">${ico("calendar")} Сохранено ${fmtDate(it.created_at)}</span></div>
+          <span class="saved">${ico("calendar")} Сохранено ${fmtDate(it.added_at || it.created_at)}</span></div>
         ${it.summary || it.note ? `<section class="sec"><h4>${ico("sparkles")} ${it.summary ? "Выжимка от ИИ" : "Заметка"}</h4><div class="box"><p>${esc(it.summary || it.note)}</p></div></section>` : ""}
         <div class="tag-edit" id="ttags">${it.tags.map(t => `<span class="tag">#${esc(t)}</span>`).join("")}<button class="add" id="taddtag">${ico("plus")} Добавить тег</button></div>
         ${!it.image && it.url ? `<button class="btn sm" id="topen" style="align-self:flex-start">${ico("external-link")} Открыть оригинал</button>` : ""}
@@ -846,7 +869,7 @@ function drawPalette() {
       ${it.image ? `<div class="thumb"><img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.classList.add('empty');this.remove()"></div>` : `<div class="thumb empty">${ico(k.icon)}</div>`}
       <div style="min-width:0"><h4>${esc(it.title)}</h4><p>${highlight(it.match || it.summary || "", it.highlight)}</p>
         <div class="tags">${it.tags.slice(0, 2).map(t => `<span class="tag">#${esc(t)}</span>`).join("")}</div></div>
-      <span class="d">${fmtDate(it.created_at)}</span></div>`;
+      <span class="d">${fmtDate(it.added_at || it.created_at)}</span></div>`;
   }).join("");
   icons();
   res.querySelectorAll(".hit").forEach(h => {
@@ -898,7 +921,7 @@ function tauriHooks() {
       const r = await api("/api/items", { method: "POST", body: { text } });
       if (r.saved.length) toast(`Сохранено: ${r.saved[0].title}`);
       else if (r.duplicates.length) toast("Это уже есть в Закромах");
-      refreshMeta(); if (["all", "new"].includes(S.route.view)) route();
+      refreshMeta(); if (["all", "recent", "new"].includes(S.route.view)) route();
     } catch (err) { toast(err.message); }
   });
 }
